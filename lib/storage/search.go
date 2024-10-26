@@ -277,6 +277,14 @@ type SearchQuery struct {
 	AccountID uint32
 	ProjectID uint32
 
+	// TenantTokens and IsMultiTenant is artificial fields
+	// they're only exist at runtime and cannot be transferred
+	// via network calls for keeping communication protocol compatibility
+	// TODO:@f41gh7 introduce breaking change to the protocol later
+	// and use TenantTokens instead of AccountID and ProjectID
+	TenantTokens  []TenantToken
+	IsMultiTenant bool
+
 	// The time range for searching time series
 	MinTimestamp int64
 	MaxTimestamp int64
@@ -306,12 +314,53 @@ func NewSearchQuery(accountID, projectID uint32, start, end int64, tagFilterss [
 		maxMetrics = 2e9
 	}
 	return &SearchQuery{
-		AccountID:    accountID,
-		ProjectID:    projectID,
 		MinTimestamp: start,
 		MaxTimestamp: end,
 		TagFilterss:  tagFilterss,
 		MaxMetrics:   maxMetrics,
+		TenantTokens: []TenantToken{
+			{
+				AccountID: accountID,
+				ProjectID: projectID,
+			},
+		},
+	}
+}
+
+// TenantToken represents a tenant (accountID, projectID) pair.
+type TenantToken struct {
+	AccountID uint32
+	ProjectID uint32
+}
+
+// String returns string representation of t.
+func (t *TenantToken) String() string {
+	return fmt.Sprintf("{accountID=%d, projectID=%d}", t.AccountID, t.ProjectID)
+}
+
+// Marshal appends marshaled t to dst and returns the result.
+func (t *TenantToken) Marshal(dst []byte) []byte {
+	dst = encoding.MarshalUint32(dst, t.AccountID)
+	dst = encoding.MarshalUint32(dst, t.ProjectID)
+	return dst
+}
+
+// NewMultiTenantSearchQuery creates new search query for the given args.
+func NewMultiTenantSearchQuery(tenants []TenantToken, start, end int64, tagFilterss [][]TagFilter, maxMetrics int) *SearchQuery {
+	if start < 0 {
+		// This is needed for https://github.com/VictoriaMetrics/VictoriaMetrics/issues/5553
+		start = 0
+	}
+	if maxMetrics <= 0 {
+		maxMetrics = 2e9
+	}
+	return &SearchQuery{
+		TenantTokens:  tenants,
+		MinTimestamp:  start,
+		MaxTimestamp:  end,
+		TagFilterss:   tagFilterss,
+		MaxMetrics:    maxMetrics,
+		IsMultiTenant: true,
 	}
 }
 
@@ -412,7 +461,15 @@ func (sq *SearchQuery) String() string {
 	}
 	start := TimestampToHumanReadableFormat(sq.MinTimestamp)
 	end := TimestampToHumanReadableFormat(sq.MaxTimestamp)
-	return fmt.Sprintf("accountID=%d, projectID=%d, filters=%s, timeRange=[%s..%s]", sq.AccountID, sq.ProjectID, a, start, end)
+	if !sq.IsMultiTenant {
+		return fmt.Sprintf("accountID=%d, projectID=%d, filters=%s, timeRange=[%s..%s]", sq.AccountID, sq.ProjectID, a, start, end)
+	}
+
+	tts := make([]string, len(sq.TenantTokens))
+	for i, tt := range sq.TenantTokens {
+		tts[i] = tt.String()
+	}
+	return fmt.Sprintf("tenants=[%s], filters=%s, timeRange=[%s..%s]", strings.Join(tts, ","), a, start, end)
 }
 
 func tagFiltersToString(tfs []TagFilter) string {
@@ -423,10 +480,9 @@ func tagFiltersToString(tfs []TagFilter) string {
 	return "{" + strings.Join(a, ",") + "}"
 }
 
-// Marshal appends marshaled sq to dst and returns the result.
-func (sq *SearchQuery) Marshal(dst []byte) []byte {
-	dst = encoding.MarshalUint32(dst, sq.AccountID)
-	dst = encoding.MarshalUint32(dst, sq.ProjectID)
+// MarshaWithoutTenant appends marshaled sq without AccountID/ProjectID to dst and returns the result.
+// It is expected that TenantToken is already marshaled to dst.
+func (sq *SearchQuery) MarshaWithoutTenant(dst []byte) []byte {
 	dst = encoding.MarshalVarInt64(dst, sq.MinTimestamp)
 	dst = encoding.MarshalVarInt64(dst, sq.MaxTimestamp)
 	dst = encoding.MarshalVarUint64(dst, uint64(len(sq.TagFilterss)))
@@ -454,6 +510,7 @@ func (sq *SearchQuery) Unmarshal(src []byte) ([]byte, error) {
 	sq.ProjectID = encoding.UnmarshalUint32(src)
 	src = src[4:]
 
+	sq.TenantTokens = []TenantToken{{AccountID: sq.AccountID, ProjectID: sq.ProjectID}}
 	minTs, nSize := encoding.UnmarshalVarInt64(src)
 	if nSize <= 0 {
 		return src, fmt.Errorf("cannot unmarshal MinTimestamp from varint")

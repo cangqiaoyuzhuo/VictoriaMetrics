@@ -1,6 +1,90 @@
 ## Next release
 
-- TODO
+- Added alertmanager datasource. See [this issue](https://github.com/VictoriaMetrics/helm-charts/issues/1592)
+- Renamed `grafana.sidecar.dashboards.additionalDashboardLabels` to `defaultDashboards.labels`
+- Renamed `grafana.sidecar.dashboards.additionalDashboardAnnotations` to `defaultDashboards.annotations`
+- Renamed `grafana.sidecar.datasources.default` to `defaultDatasources.victoriametrics.datasources`
+- Renamed `grafana.additionalDataSources` to `defaultDatasources.extra`
+- Renamed `grafana.defaultDashboardsTimezone` to `defaultDashboards.defaultTimezone`
+- Removed `grafana.defaultDatasourceType` and default datasource type is picked from `defaultDatasources.victoriametrics.datasources[*].isDefault: true`
+- Removed crds subchart as it's now included in operator
+
+## 0.27.6
+
+**Release date:** 2024-10-21
+
+![AppVersion: v1.105.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.105.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Add an explicit fail in case both Grafana dashboard via sidecar and `grafana.dashboards` are enabled. Previously, this configuration would be accepted and sidecar configuration would silently override `.grafana.dashboards` configuration. See [these docs](https://docs.victoriametrics.com/helm/victoriametrics-k8s-stack/#adding-external-dashboards) for information about adding external dashboards.
+- bump version of VM components to [v1.105.0](https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.105.0)
+
+## 0.27.5
+
+**Release date:** 2024-10-15
+
+![AppVersion: v1.104.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.104.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Fixed templates context issues
+- Added ability to disable alertmanager rules if alertmanager.enabled: false
+- Updated vm-operator to v0.48.4 release
+
+## 0.27.4
+
+**Release date:** 2024-10-12
+
+![AppVersion: v1.104.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.104.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Fixed default image tags template. See [this issue](https://github.com/VictoriaMetrics/helm-charts/issues/1587)
+
+## 0.27.3
+
+**Release date:** 2024-10-11
+
+![AppVersion: v1.104.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.104.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Grafana chart: 8.4.9 -> 8.5.2
+- Prometheus operator chart: 11.0 -> 15.0
+- Human-readable error about Helm version requirement
+- Updated rules template context structure
+
+## 0.27.2
+
+**Release date:** 2024-10-10
+
+![AppVersion: v1.104.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.104.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Fixed dashboards variable queries
+
+## 0.27.1
+
+**Release date:** 2024-10-10
+
+![AppVersion: v1.104.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.104.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Generate VM components tag version from chart app name by default
+- Added k8s apiserver, kube-proxy, controller-manager and kubelet dashboards
+- Moved `dashboards.<dashboard>` to `defaultDashboards.dashboards.<dashboard>.enabled`
+- Moved `defaultDashboardsEnabled` to `defaultDashboards.enabled`
+- Moved `grafanaOperatorDashboardsFormat` to `defaultDashboards.grafanaOperator`
+- Added condition for `grafana-overview`, `alertmanager-overview` and `vmbackupmanager` dashboards. See [this issue](https://github.com/VictoriaMetrics/helm-charts/issues/1564)
+- Removed `experimentalDashboardsEnabled` param
+- Upgraded default Alertmanager tag 0.25.0 -> 0.27.0
+- Upgraded operator chart 0.35.2 -> 0.35.3
+
+## 0.27.0
+
+**Release date:** 2024-10-02
+
+![AppVersion: v1.104.0](https://img.shields.io/static/v1?label=AppVersion&message=v1.104.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- bump version of VM components to [v1.104.0](https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.104.0)
 
 ## 0.26.0
 

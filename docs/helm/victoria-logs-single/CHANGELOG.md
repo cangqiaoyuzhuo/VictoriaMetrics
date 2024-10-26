@@ -1,6 +1,25 @@
 ## Next release
 
-- TODO
+- Added grafana dashboard. See [this issue](https://github.com/VictoriaMetrics/helm-charts/issues/1590)
+- Custom fluent-bit template to push data to multiple VLogs instances when replica count is greated than 1
+
+## 0.6.6
+
+**Release date:** 2024-10-11
+
+![AppVersion: v0.29.0](https://img.shields.io/static/v1?label=AppVersion&message=v0.29.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- Human-readable error about Helm version requirement
+
+## 0.6.5
+
+**Release date:** 2024-10-04
+
+![AppVersion: v0.29.0](https://img.shields.io/static/v1?label=AppVersion&message=v0.29.0&color=success&logo=)
+![Helm: v3](https://img.shields.io/static/v1?label=Helm&message=v3&color=informational&logo=helm)
+
+- upgraded common chart dependency
 
 ## 0.6.4
 

@@ -14,6 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/VictoriaMetrics/metrics"
+	"github.com/VictoriaMetrics/metricsql"
+
+	"github.com/valyala/fastjson/fastfloat"
+
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmselect/netstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmselect/promql"
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmselect/querystats"
@@ -30,9 +35,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/querytracer"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
-	"github.com/VictoriaMetrics/metrics"
-	"github.com/VictoriaMetrics/metricsql"
-	"github.com/valyala/fastjson/fastfloat"
 )
 
 var (
@@ -53,7 +55,8 @@ var (
 		"points with timestamps closer than -search.latencyOffset to the current time. The adjustment is needed because such points may contain incomplete data")
 	selectNodes = flagutil.NewArrayString("selectNode", "Comma-separated addresses of vmselect nodes; usage: -selectNode=vmselect-host1,...,vmselect-hostN")
 
-	maxUniqueTimeseries = flag.Int("search.maxUniqueTimeseries", 300e3, "The maximum number of unique time series, which can be selected during /api/v1/query and /api/v1/query_range queries. This option allows limiting memory usage")
+	maxUniqueTimeseries = flag.Int("search.maxUniqueTimeseries", 0, "The maximum number of unique time series, which can be selected during /api/v1/query and /api/v1/query_range queries. This option allows limiting memory usage. "+
+		"The limit can't exceed the corresponding -search.maxUniqueTimeseries limit on vmstorage, it can be only set to lower values.")
 	maxFederateSeries   = flag.Int("search.maxFederateSeries", 1e6, "The maximum number of time series, which can be returned from /federate. This option allows limiting memory usage")
 	maxExportSeries     = flag.Int("search.maxExportSeries", 10e6, "The maximum number of time series, which can be returned from /api/v1/export* APIs. This option allows limiting memory usage")
 	maxTSDBStatusSeries = flag.Int("search.maxTSDBStatusSeries", 10e6, "The maximum number of time series, which can be processed during the call to /api/v1/status/tsdb. This option allows limiting memory usage")
@@ -126,7 +129,10 @@ func FederateHandler(startTime time.Time, at *auth.Token, w http.ResponseWriter,
 	if cp.IsDefaultTimeRange() {
 		cp.start = cp.end - lookbackDelta
 	}
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxFederateSeries)
+	sq, err := getSearchQuery(nil, at, cp, *maxFederateSeries)
+	if err != nil {
+		return fmt.Errorf("cannot obtain search query: %w", err)
+	}
 	denyPartialResponse := httputils.GetDenyPartialResponse(r)
 	rss, isPartial, err := netstorage.ProcessSearchQuery(nil, denyPartialResponse, sq, cp.deadline)
 	if err != nil {
@@ -172,7 +178,10 @@ func ExportCSVHandler(startTime time.Time, at *auth.Token, w http.ResponseWriter
 	fieldNames := strings.Split(format, ",")
 	reduceMemUsage := httputils.GetBool(r, "reduce_mem_usage")
 
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxExportSeries)
+	sq, err := getSearchQuery(nil, at, cp, *maxExportSeries)
+	if err != nil {
+		return fmt.Errorf("cannot obtain search query: %w", err)
+	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	bw := bufferedwriter.Get(w)
 	defer bufferedwriter.Put(bw)
@@ -252,7 +261,10 @@ func ExportNativeHandler(startTime time.Time, at *auth.Token, w http.ResponseWri
 		return err
 	}
 
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxExportSeries)
+	sq, err := getSearchQuery(nil, at, cp, *maxExportSeries)
+	if err != nil {
+		return fmt.Errorf("cannot obtain search query: %w", err)
+	}
 	w.Header().Set("Content-Type", "VictoriaMetrics/native")
 	bw := bufferedwriter.Get(w)
 	defer bufferedwriter.Put(bw)
@@ -394,7 +406,11 @@ func exportHandler(qt *querytracer.Tracer, at *auth.Token, w http.ResponseWriter
 		}
 	}
 
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxExportSeries)
+	sq, err := getSearchQuery(qt, at, cp, *maxExportSeries)
+	if err != nil {
+		return fmt.Errorf("cannot obtain search query: %w", err)
+	}
+
 	w.Header().Set("Content-Type", contentType)
 
 	doneCh := make(chan error, 1)
@@ -452,7 +468,7 @@ func exportHandler(qt *querytracer.Tracer, at *auth.Token, w http.ResponseWriter
 			doneCh <- err
 		}()
 	}
-	err := <-doneCh
+	err = <-doneCh
 	if err != nil {
 		return fmt.Errorf("cannot send data to remote client: %w", err)
 	}
@@ -627,12 +643,14 @@ func LabelValuesHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.To
 		return err
 	}
 	denyPartialResponse := httputils.GetDenyPartialResponse(r)
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxLabelsAPISeries)
+	sq, err := getSearchQuery(qt, at, cp, *maxLabelsAPISeries)
+	if err != nil {
+		return err
+	}
 	labelValues, isPartial, err := netstorage.LabelValues(qt, denyPartialResponse, labelName, sq, limit, cp.deadline)
 	if err != nil {
 		return fmt.Errorf("cannot obtain values for label %q: %w", labelName, err)
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	bw := bufferedwriter.Get(w)
 	defer bufferedwriter.Put(bw)
@@ -691,9 +709,12 @@ func TSDBStatusHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 		topN = n
 	}
 	denyPartialResponse := httputils.GetDenyPartialResponse(r)
-	start := int64(date*secsPerDay) * 1000
-	end := int64((date+1)*secsPerDay)*1000 - 1
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, start, end, cp.filterss, *maxTSDBStatusSeries)
+	cp.start = int64(date*secsPerDay) * 1000
+	cp.end = int64((date+1)*secsPerDay)*1000 - 1
+	sq, err := getSearchQuery(qt, at, cp, *maxTSDBStatusSeries)
+	if err != nil {
+		return err
+	}
 	status, isPartial, err := netstorage.TSDBStatus(qt, denyPartialResponse, sq, focusLabel, topN, cp.deadline)
 	if err != nil {
 		return fmt.Errorf("cannot obtain tsdb stats: %w", err)
@@ -726,7 +747,10 @@ func LabelsHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, 
 		return err
 	}
 	denyPartialResponse := httputils.GetDenyPartialResponse(r)
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxLabelsAPISeries)
+	sq, err := getSearchQuery(qt, at, cp, *maxLabelsAPISeries)
+	if err != nil {
+		return err
+	}
 	labels, isPartial, err := netstorage.LabelNames(qt, denyPartialResponse, sq, limit, cp.deadline)
 	if err != nil {
 		return fmt.Errorf("cannot obtain labels: %w", err)
@@ -740,6 +764,18 @@ func LabelsHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, 
 		return fmt.Errorf("cannot send labels response to remote client: %w", err)
 	}
 	return nil
+}
+
+func getSearchQuery(qt *querytracer.Tracer, at *auth.Token, cp *commonParams, maxSeries int) (*storage.SearchQuery, error) {
+	if at != nil {
+		return storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, maxSeries), nil
+	}
+	tt, tfs, err := netstorage.GetTenantTokensFromFilters(qt, storage.TimeRange{MinTimestamp: cp.start, MaxTimestamp: cp.end}, cp.filterss, cp.deadline)
+	if err != nil {
+		return nil, fmt.Errorf("cannot obtain tenant tokens: %w", err)
+	}
+	sq := storage.NewMultiTenantSearchQuery(tt, cp.start, cp.end, tfs, maxSeries)
+	return sq, nil
 }
 
 var labelsDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/api/v1/labels"}`)
@@ -786,8 +822,10 @@ func SeriesHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, 
 	if err != nil {
 		return err
 	}
-
-	sq := storage.NewSearchQuery(at.AccountID, at.ProjectID, cp.start, cp.end, cp.filterss, *maxSeriesLimit)
+	sq, err := getSearchQuery(qt, at, cp, *maxSeriesLimit)
+	if err != nil {
+		return err
+	}
 	denyPartialResponse := httputils.GetDenyPartialResponse(r)
 	metricNames, isPartial, err := netstorage.SearchMetricNames(qt, denyPartialResponse, sq, cp.deadline)
 	if err != nil {
@@ -913,7 +951,6 @@ func QueryHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, w
 	}
 	qs := &promql.QueryStats{}
 	ec := &promql.EvalConfig{
-		AuthToken:           at,
 		Start:               start,
 		End:                 start,
 		Step:                step,
@@ -932,6 +969,11 @@ func QueryHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Token, w
 		DenyPartialResponse: httputils.GetDenyPartialResponse(r),
 		QueryStats:          qs,
 	}
+	err = populateAuthTokens(qt, ec, at, deadline)
+	if err != nil {
+		return fmt.Errorf("cannot populate auth tokens: %w", err)
+	}
+
 	result, err := promql.Exec(qt, ec, query, true)
 	if err != nil {
 		return fmt.Errorf("error when executing query=%q for (time=%d, step=%d): %w", query, start, step, err)
@@ -1023,7 +1065,6 @@ func queryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 
 	qs := &promql.QueryStats{}
 	ec := &promql.EvalConfig{
-		AuthToken:           at,
 		Start:               start,
 		End:                 end,
 		Step:                step,
@@ -1042,6 +1083,11 @@ func queryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 		DenyPartialResponse: httputils.GetDenyPartialResponse(r),
 		QueryStats:          qs,
 	}
+	err = populateAuthTokens(qt, ec, at, deadline)
+	if err != nil {
+		return fmt.Errorf("cannot populate auth tokens: %w", err)
+	}
+
 	result, err := promql.Exec(qt, ec, query, false)
 	if err != nil {
 		return err
@@ -1070,6 +1116,30 @@ func queryRangeHandler(qt *querytracer.Tracer, startTime time.Time, at *auth.Tok
 	if err := bw.Flush(); err != nil {
 		return fmt.Errorf("cannot send query range response to remote client: %w", err)
 	}
+	return nil
+}
+
+func populateAuthTokens(qt *querytracer.Tracer, ec *promql.EvalConfig, at *auth.Token, deadline searchutils.Deadline) error {
+	if at != nil {
+		ec.AuthTokens = []*auth.Token{at}
+		return nil
+	}
+
+	tt, tfs, err := netstorage.GetTenantTokensFromFilters(qt, storage.TimeRange{MinTimestamp: ec.Start, MaxTimestamp: ec.End}, ec.EnforcedTagFilterss, deadline)
+	if err != nil {
+		return fmt.Errorf("cannot obtain tenant tokens for the given search query: %w", err)
+	}
+	ec.EnforcedTagFilterss = tfs
+
+	ats := make([]*auth.Token, len(tt))
+	for i, t := range tt {
+		ats[i] = &auth.Token{
+			AccountID: t.AccountID,
+			ProjectID: t.ProjectID,
+		}
+	}
+	ec.AuthTokens = ats
+	ec.IsMultiTenant = true
 	return nil
 }
 

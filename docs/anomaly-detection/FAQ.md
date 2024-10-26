@@ -118,9 +118,13 @@ writer:
 Configuration above will produce N intervals of full length (`fit_window`=14d + `fit_every`=1h) until `to_iso` timestamp is reached to run N consecutive `fit` calls to train models; Then these models will be used to produce `M = [fit_every / sampling_frequency]` infer datapoints for `fit_every` range at the end of each such interval, imitating M consecutive calls of `infer_every` in `PeriodicScheduler` [config](https://docs.victoriametrics.com/anomaly-detection/components/scheduler#periodic-scheduler). These datapoints then will be written back to VictoriaMetrics TSDB, defined in `writer` [section](https://docs.victoriametrics.com/anomaly-detection/components/writer#vm-writer) for further visualization (i.e. in VMUI or Grafana)
 
 ## Resource consumption of vmanomaly
-`vmanomaly` itself is a lightweight service, resource usage is primarily dependent on [scheduling](https://docs.victoriametrics.com/anomaly-detection/components/scheduler) (how often and on what data to fit/infer your models), [# and size of timeseries returned by your queries](https://docs.victoriametrics.com/anomaly-detection/components/reader/#vm-reader), and the complexity of the employed [models](https://docs.victoriametrics.com/anomaly-detection/components/models). Its resource usage is directly related to these factors, making it adaptable to various operational scales.
+`vmanomaly` itself is a lightweight service, resource usage is primarily dependent on [scheduling](https://docs.victoriametrics.com/anomaly-detection/components/scheduler) (how often and on what data to fit/infer your models), [# and size of timeseries returned by your queries](https://docs.victoriametrics.com/anomaly-detection/components/reader/#vm-reader), and the complexity of the employed [models](https://docs.victoriametrics.com/anomaly-detection/components/models). Its resource usage is directly related to these factors, making it adaptable to various operational scales. Various optimizations are available to balance between RAM usage, processing speed, and model capacity. These options are described in the sections below.
 
-> **Note**: Starting from [v1.13.0](https://docs.victoriametrics.com/anomaly-detection/changelog/#v1130), there is a mode to save anomaly detection models on host filesystem after `fit` stage (instead of keeping them in-memory by default). **Resource-intensive setups** (many models, many metrics, bigger [`fit_window` arg](https://docs.victoriametrics.com/anomaly-detection/components/scheduler#periodic-scheduler-config-example)) and/or 3rd-party models that store fit data (like [ProphetModel](https://docs.victoriametrics.com/anomaly-detection/components/models#prophet) or [HoltWinters](https://docs.victoriametrics.com/anomaly-detection/components/models#holt-winters)) will have RAM consumption greatly reduced at a cost of slightly slower `infer` stage. To enable it, you need to set environment variable `VMANOMALY_MODEL_DUMPS_DIR` to desired location. [Helm charts](https://github.com/VictoriaMetrics/helm-charts/blob/master/charts/victoria-metrics-anomaly/README.md) are being updated accordingly ([`StatefulSet`](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/) for persistent storage starting from chart version `1.3.0`).
+### On-disk mode
+
+> **Note**: Starting from [v1.13.0](https://docs.victoriametrics.com/anomaly-detection/changelog/#v1130), there is an option to save anomaly detection models to the host filesystem after the `fit` stage (instead of keeping them in memory by default). This is particularly useful for **resource-intensive setups** (e.g., many models, many metrics, or larger [`fit_window` argument](https://docs.victoriametrics.com/anomaly-detection/components/scheduler#periodic-scheduler-config-example)) and for 3rd-party models that store fit data (such as [ProphetModel](https://docs.victoriametrics.com/anomaly-detection/components/models#prophet) or [HoltWinters](https://docs.victoriametrics.com/anomaly-detection/components/models#holt-winters)). This reduces RAM consumption significantly, though at the cost of slightly slower `infer` stages. To enable this, set the environment variable `VMANOMALY_MODEL_DUMPS_DIR` to the desired location. If using [Helm charts](https://github.com/VictoriaMetrics/helm-charts/blob/master/charts/victoria-metrics-anomaly/README.md), starting from chart version `1.3.0` `.persistentVolume.enabled` should be set to `true` in [values.yaml](https://github.com/VictoriaMetrics/helm-charts/blob/master/charts/victoria-metrics-anomaly/values.yaml).
+
+> **Note**: Starting from [v1.16.0](https://docs.victoriametrics.com/anomaly-detection/changelog/#v1160), a similar optimization is available for data read from VictoriaMetrics TSDB. To use this, set the environment variable `VMANOMALY_DATA_DUMPS_DIR` to the desired location.
 
 Here's an example of how to set it up in docker-compose using volumes:
 ```yaml
@@ -128,7 +132,7 @@ services:
   # ...
   vmanomaly:
     container_name: vmanomaly
-    image: victoriametrics/vmanomaly:latest
+    image: victoriametrics/vmanomaly:v1.17.2
     # ...
     ports:
       - "8490:8490"
@@ -138,22 +142,27 @@ services:
       - ./vmanomaly_license:/license
       # map the host directory to the container directory
       - vmanomaly_model_dump_dir:/vmanomaly/tmp/models
+      - vmanomaly_data_dump_dir:/vmanomaly/tmp/data
     environment:
       # set the environment variable for the model dump directory
       - VMANOMALY_MODEL_DUMPS_DIR=/vmanomaly/tmp/models/
+      - VMANOMALY_DATA_DUMPS_DIR=/vmanomaly/tmp/data/
     platform: "linux/amd64"
     command:
       - "/config.yaml"
-      - "--license-file=/license"
+      - "--licenseFile=/license"
 
 volumes:
   # ...
   vmanomaly_model_dump_dir: {}
+  vmanomaly_data_dump_dir: {}
 ```
 
-> **Note**: Starting from [v1.15.0](https://docs.victoriametrics.com/anomaly-detection/changelog#v1150) with the introduction of [online models](https://docs.victoriametrics.com/anomaly-detection/components/models/#online-models), you can additionally reduce resource consumption (e.g., flatten `fit` stage peaks by querying less data from VictoriaMetrics at once).
+For Helm chart users, refer to the `persistentVolume` [section](https://github.com/VictoriaMetrics/helm-charts/blob/7f5a2c00b14c2c088d7d8d8bcee7a440a5ff11c6/charts/victoria-metrics-anomaly/values.yaml#L183) in the [`values.yaml`](https://github.com/VictoriaMetrics/helm-charts/blob/master/charts/victoria-metrics-anomaly/values.yaml) file. Ensure that the boolean flags `dumpModels` and `dumpData` are set as needed (both are *enabled* by default).
 
-**Additional Benefits of Switching to Online Models**:
+### Online models
+
+> **Note**: Starting from [v1.15.0](https://docs.victoriametrics.com/anomaly-detection/changelog#v1150) with the introduction of [online models](https://docs.victoriametrics.com/anomaly-detection/components/models/#online-models), you can additionally reduce resource consumption (e.g., flatten `fit` stage peaks by querying less data from VictoriaMetrics at once).
 
 - **Reduced Latency**: Online models update incrementally, which can lead to faster response times for anomaly detection since the model continuously adapts to new data without waiting for a batch `fit`.
 - **Scalability**: Handling smaller data chunks at a time reduces memory and computational overhead, making it easier to scale the anomaly detection system.
@@ -215,6 +224,76 @@ P.s. `infer` data volume will remain the same for both models, so it does not af
 **Data Volume Reduction**:
 - Old: 8064 hours/week (fit) + 168 hours/week (infer)
 - New:    4 hours/week (fit) + 168 hours/week (infer)
+
+## Handling large queries in vmanomaly
+
+
+If you're dealing with a large query in the `queries` argument of [VmReader](https://docs.victoriametrics.com/anomaly-detection/components/reader/#vm-reader) (especially when running [within a scheduler using a long](https://docs.victoriametrics.com/anomaly-detection/components/scheduler/?highlight=fit_window#periodic-scheduler) `fit_window`), you may encounter issues such as query timeouts (due to the `search.maxQueryDuration` server limit) or rejections (if the `search.maxPointsPerTimeseries` server limit is exceeded). 
+
+We recommend upgrading to [v1.17.2](https://docs.victoriametrics.com/anomaly-detection/changelog/#v1171), which introduced the `max_points_per_query` argument (both global and [query-specific](https://docs.victoriametrics.com/anomaly-detection/components/reader/#per-query-parameters)) for the [VmReader](https://docs.victoriametrics.com/anomaly-detection/components/reader/#vm-reader). This argument overrides how `search.maxPointsPerTimeseries` flag handling (introduced in [v1.14.1](https://docs.victoriametrics.com/anomaly-detection/changelog/#v1141)) is used in `vmanomaly` for splitting long `fit_window` queries into smaller sub-intervals. This helps users avoid hitting the `search.maxQueryDuration` limit for individual queries by distributing initial query across multiple subquery requests with minimal overhead.
+
+By splitting long `fit_window` queries into smaller sub-intervals, this helps avoid hitting the `search.maxQueryDuration` limit, distributing the load across multiple subquery requests with minimal overhead. To resolve the issue, reduce `max_points_per_query` to a value lower than `search.maxPointsPerTimeseries` until the problem is gone:
+
+```yaml
+reader:
+  # other reader args
+  max_points_per_query: 10000  # reader-level constraint
+  queries:
+    sum_alerts:
+      expr: 'sum(ALERTS{alertstate=~'(pending|firing)'}) by (alertstate)'
+      max_points_per_query: 5000  # query-level override
+models:
+    prophet:
+      # other model args
+      queries: [
+        'sum_alerts',
+      ]
+# other config sections
+```
+
+### Alternative workaround for older versions
+
+If upgrading is not an option, you can partially address the issue by splitting your large query into smaller ones using appropriate label filters:
+
+For example, such query
+
+```yaml
+reader:
+  # other reader args
+  queries:
+    sum_alerts:
+      expr: 'sum(ALERTS{alertstate=~'(pending|firing)'}) by (alertstate)'
+models:
+    prophet:
+      # other model args
+      queries: [
+        'sum_alerts',
+      ]
+# other config sections
+```
+
+can be modified to:
+
+```yaml
+reader:
+  # other reader args
+  queries:
+    sum_alerts_pending:
+      expr: 'sum(ALERTS{alertstate='pending'}) by ()'
+    sum_alerts_firing:
+      expr: 'sum(ALERTS{alertstate='firing'}) by ()'
+models:
+    prophet:
+      # other model args
+      queries: [
+        'sum_alerts_pending',
+        'sum_alerts_firing',
+      ]
+# other config sections
+```
+
+Please note that this approach may not fully resolve the issue if subqueries are not evenly distributed in terms of returned timeseries. Additionally, this workaround is not suitable for queries used in [multivariate models](https://docs.victoriametrics.com/anomaly-detection/components/models#multivariate-models) (especially when using the [groupby](https://docs.victoriametrics.com/anomaly-detection/components/models/#group-by) argument).
+
 
 ## Scaling vmanomaly
 > **Note:** As of latest release we do not support cluster or auto-scaled version yet (though, it's in our roadmap for - better backends, more parallelization, etc.), so proposed workarounds should be addressed *manually*.
